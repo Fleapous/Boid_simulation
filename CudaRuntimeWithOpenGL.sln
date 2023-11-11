@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.7.34202.233
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CudaRuntimeWithOpenGL", "CudaRuntimeWithOpenGL\CudaRuntimeWithOpenGL.vcxproj", "{24637BE3-9980-4A41-9A5C-2B65804D917D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{24637BE3-9980-4A41-9A5C-2B65804D917D}.Debug|x64.ActiveCfg = Debug|x64
+		{24637BE3-9980-4A41-9A5C-2B65804D917D}.Debug|x64.Build.0 = Debug|x64
+		{24637BE3-9980-4A41-9A5C-2B65804D917D}.Release|x64.ActiveCfg = Release|x64
+		{24637BE3-9980-4A41-9A5C-2B65804D917D}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {F9D536F7-4975-4E45-9C2D-D9FF6084BAA9}
+	EndGlobalSection
+EndGlobal
