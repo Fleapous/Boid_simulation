@@ -25,11 +25,24 @@
 #define HEIGHT 500
 
 #define HIGHNUMBER 100000
-#define MAX_BOIDS_IN_A_CELL 60 //since block can only have so many threads i need to clamp it at some number (multitute of 32 will be better)
+#define MAX_BOIDS_IN_A_CELL 80 //since block can only have so many threads i need to clamp it at some number (multitute of 32 will be better)
 
 //boid logic parameters
+// general 
+#define MAX_SPEED 60
+#define MIN_SPEED 20
+#define EDGE_RANGE 30
+#define EDGE_AVOIDANCE_FACTOR 40
+
+
+//seperation 
 #define PROTECTED_RANGE 5
 #define AVOIDFACTOR 0.2
+
+//Alignment & Cohesion
+#define VISIBLE_RANGE 10
+#define MATCHINGFACTOR 0.1
+#define CENTERINGFACTOR 0.05
 
 uint2 gridList[BoidCount];
 
@@ -177,7 +190,7 @@ __global__ void makeLookupTable(uint2* gridList, Boid* boidArray, Cell* cellArra
 }
 
 __device__ float2 calculateSeparation(int* localBoidIDs, int* neighboringBoidIds, int boidIndex, Boid* boids, Boid currentBoid) {
-    int closeDx = 0, closeDy = 0;
+    float closeDx = 0, closeDy = 0;
     //loop through local boids
     for (int i = 0; i < BoidCount; i++)
     {
@@ -217,6 +230,112 @@ __device__ float2 calculateSeparation(int* localBoidIDs, int* neighboringBoidIds
     }
 
     return make_float2(closeDx, closeDy);
+}
+__device__ float2 calculateAlignment(int* localBoidIDs, int* neighboringBoidIds, int boidIndex, Boid* boids, Boid currentBoid)
+{
+    float xvelAvg = 0, yvelAvg = 0;
+    int neighboring_boids = 0;
+    //loop through local boids
+    for (int i = 0; i < BoidCount; i++)
+    {
+        if (i >= MAX_BOIDS_IN_A_CELL)
+            continue;
+
+        if (i != boidIndex && localBoidIDs[i] != -1)
+        {
+            //printf("current boid vs compared boid: (%d, %d)\n", currentBoid.Id, boids[localBoidIDs[i]].Id);
+            float distX = currentBoid.position.x - boids[localBoidIDs[i]].position.x;
+            float distY = currentBoid.position.y - boids[localBoidIDs[i]].position.y;
+            //add only if inside protected range
+            if (sqrt(distX * distX + distY * distY) < VISIBLE_RANGE)
+            {
+                xvelAvg += boids[localBoidIDs[i]].velocity.x;
+                yvelAvg += boids[localBoidIDs[i]].velocity.y;
+                neighboring_boids++;
+            }
+
+        }
+    }
+    //loop through neighboring boids 
+    for (int i = 0; i < BoidCount * 8; i++)
+    {
+        if (i >= MAX_BOIDS_IN_A_CELL * 8)
+            continue;
+        if (localBoidIDs[i] != -1 && i < MAX_BOIDS_IN_A_CELL * 8)
+        {
+            float distX = currentBoid.position.x - boids[neighboringBoidIds[i]].position.x;
+            float distY = currentBoid.position.y - boids[neighboringBoidIds[i]].position.y;
+            //add only if inside protected range
+            if (sqrt(distX * distX + distY * distY) < VISIBLE_RANGE)
+            {
+                xvelAvg += boids[neighboringBoidIds[i]].velocity.x;
+                yvelAvg += boids[neighboringBoidIds[i]].velocity.y;
+                neighboring_boids++;
+            }
+        }
+    }
+
+    if(neighboring_boids > 0)
+    {
+        xvelAvg = xvelAvg / neighboring_boids;
+        yvelAvg = yvelAvg / neighboring_boids;
+    }
+
+
+    return make_float2(xvelAvg, yvelAvg);
+}
+__device__ float2 calculateCohesion(int* localBoidIDs, int* neighboringBoidIds, int boidIndex, Boid* boids, Boid currentBoid)
+{
+    float xposAvg = 0, yposAvg = 0;
+    int neighboring_boids = 0;
+    //loop through local boids
+    for (int i = 0; i < BoidCount; i++)
+    {
+        if (i >= MAX_BOIDS_IN_A_CELL)
+            continue;
+
+        if (i != boidIndex && localBoidIDs[i] != -1)
+        {
+            //printf("current boid vs compared boid: (%d, %d)\n", currentBoid.Id, boids[localBoidIDs[i]].Id);
+            float distX = currentBoid.position.x - boids[localBoidIDs[i]].position.x;
+            float distY = currentBoid.position.y - boids[localBoidIDs[i]].position.y;
+            //add only if inside protected range
+            if (sqrt(distX * distX + distY * distY) < VISIBLE_RANGE)
+            {
+                xposAvg += boids[localBoidIDs[i]].position.x;
+                yposAvg += boids[localBoidIDs[i]].position.y;
+                neighboring_boids++;
+            }
+
+        }
+    }
+    //loop through neighboring boids 
+    for (int i = 0; i < BoidCount * 8; i++)
+    {
+        if (i >= MAX_BOIDS_IN_A_CELL * 8)
+            continue;
+        if (localBoidIDs[i] != -1 && i < MAX_BOIDS_IN_A_CELL * 8)
+        {
+            float distX = currentBoid.position.x - boids[neighboringBoidIds[i]].position.x;
+            float distY = currentBoid.position.y - boids[neighboringBoidIds[i]].position.y;
+            //add only if inside protected range
+            if (sqrt(distX * distX + distY * distY) < VISIBLE_RANGE)
+            {
+                xposAvg += boids[neighboringBoidIds[i]].position.x;
+                yposAvg += boids[neighboringBoidIds[i]].position.y;
+                neighboring_boids++;
+            }
+        }
+    }
+
+    if (neighboring_boids > 0)
+    {
+        xposAvg = xposAvg / neighboring_boids;
+        yposAvg = yposAvg / neighboring_boids;
+    }
+
+
+    return make_float2(xposAvg, yposAvg);
 }
 __global__ void calculateBoidLogic(uint2* gridList, Boid* boidArray, Cell* cellArray, int* lookUpTable, float deltaTime)
 {
@@ -312,45 +431,57 @@ __global__ void calculateBoidLogic(uint2* gridList, Boid* boidArray, Cell* cellA
     //printf("block and thread %d, %d. currentBoidID: %d. BoidsID %d\n", blockIdx.x, threadIdx.x, currentBoidId, currentBoid.Id);
     // Fish logic: Update velocity based on separation, alignment, and cohesion rules
     float2 separation = calculateSeparation(localBoidIds, neighboringBoidIds, threadIdx.x, boidArray, currentBoid);
-    //float2 separation = make_float2(1, 1);
+    float2 alignment = calculateAlignment(localBoidIds, neighboringBoidIds, threadIdx.x, boidArray, currentBoid);
+    float2 cohesion = calculateCohesion(localBoidIds, neighboringBoidIds, threadIdx.x, boidArray, currentBoid);
+    //float2 alignment = make_float2(0, 0);
 
-    // Weighting factors for each rule
-    float alignmentWeight = 1.0;
-    float cohesionWeight = 1.0;
-
-    // Update velocity based on the rules
-    //boidArray[threadIdx.x].velocity += separationWeight * separation +
-    //    alignmentWeight * alignment +
-    //    cohesionWeight * cohesion;
-
-    float edgeAvoidanceFactor = 5;
-    float safeDistance = 20.0;      
-
-    //edge detect
-    if (currentBoid.position.x < safeDistance)
-        separation.x += edgeAvoidanceFactor;
-    else if (currentBoid.position.x > WIDTH - safeDistance)
-        separation.x -= edgeAvoidanceFactor;
-
-    if (currentBoid.position.y < safeDistance)
-        separation.y += edgeAvoidanceFactor;
-    else if (currentBoid.position.y > HEIGHT - safeDistance)
-        separation.y -= edgeAvoidanceFactor;
-
+    // Apply separation
     currentBoid.velocity.x += separation.x * AVOIDFACTOR;
     currentBoid.velocity.y += separation.y * AVOIDFACTOR;
 
-    //speed limit
-    int speedLimit = 30;
-    if (currentBoid.velocity.x > speedLimit)
-        currentBoid.velocity.x = speedLimit;
-    if (currentBoid.velocity.y > speedLimit)
-        currentBoid.velocity.y = speedLimit;
+    // Apply alignment
+    currentBoid.velocity.x += (alignment.x - currentBoid.velocity.x) * MATCHINGFACTOR;
+    currentBoid.velocity.y += (alignment.y - currentBoid.velocity.y) * MATCHINGFACTOR;
 
-    if (currentBoid.velocity.x < -speedLimit)
-        currentBoid.velocity.x = -speedLimit;
-    if (currentBoid.velocity.y < -speedLimit)
-        currentBoid.velocity.y = -speedLimit;
+    // Apply Cohesion
+    currentBoid.velocity.x += (cohesion.x - currentBoid.position.x) * CENTERINGFACTOR;
+    currentBoid.velocity.y += (cohesion.y - currentBoid.position.y) * CENTERINGFACTOR;
+
+    // Edge detection
+    float2 edgeAvoidance = make_float2(0.0f, 0.0f);
+
+    if (currentBoid.position.x < EDGE_RANGE)
+        edgeAvoidance.x += EDGE_AVOIDANCE_FACTOR;
+    else if (currentBoid.position.x > WIDTH - EDGE_RANGE)
+        edgeAvoidance.x -= EDGE_AVOIDANCE_FACTOR;
+
+    if (currentBoid.position.y < EDGE_RANGE)
+        edgeAvoidance.y += EDGE_AVOIDANCE_FACTOR;
+    else if (currentBoid.position.y > HEIGHT - EDGE_RANGE)
+        edgeAvoidance.y -= EDGE_AVOIDANCE_FACTOR;
+
+    // Apply edge avoidance
+    currentBoid.velocity.x += edgeAvoidance.x;
+    currentBoid.velocity.y += edgeAvoidance.y;
+
+    //speed limit
+    //  maximum speed limits
+    if (currentBoid.velocity.x > MAX_SPEED)
+        currentBoid.velocity.x = MAX_SPEED;
+    if (currentBoid.velocity.y > MAX_SPEED)
+        currentBoid.velocity.y = MAX_SPEED;
+
+    //  minimum speed limits
+    if (currentBoid.velocity.x < -MAX_SPEED)
+        currentBoid.velocity.x = -MAX_SPEED;
+    if (currentBoid.velocity.y < -MAX_SPEED)
+        currentBoid.velocity.y = -MAX_SPEED;
+
+    //  minimum speed
+    if (currentBoid.velocity.x < MIN_SPEED && currentBoid.velocity.x > -MIN_SPEED)
+        currentBoid.velocity.x = (currentBoid.velocity.x >= 0) ? MIN_SPEED : -MIN_SPEED;
+    if (currentBoid.velocity.y < MIN_SPEED && currentBoid.velocity.y > -MIN_SPEED)
+        currentBoid.velocity.y = (currentBoid.velocity.y >= 0) ? MIN_SPEED : -MIN_SPEED;
 
     //debug code
     //boidArray[localBoidIds[boidIndex]].velocity.x += 1 * AVOIDFACTOR;
