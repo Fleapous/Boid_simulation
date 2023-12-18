@@ -18,14 +18,14 @@
 #include <cmath>
 #include <iostream>
 
-#define BoidCount 100
-#define CELL_ARRAY_SIZE 25
+#define BoidCount 1000
+#define CELL_ARRAY_SIZE 100
 
 #define WIDTH 500
 #define HEIGHT 500
 
 #define HIGHNUMBER 100000
-#define MAX_BOIDS_IN_A_CELL 96 //since block can only have so many threads i need to clamp it at some number (multitute of 32 will be better)
+#define MAX_BOIDS_IN_A_CELL 60 //since block can only have so many threads i need to clamp it at some number (multitute of 32 will be better)
 
 //boid logic parameters
 #define PROTECTED_RANGE 5
@@ -181,8 +181,12 @@ __device__ float2 calculateSeparation(int* localBoidIDs, int* neighboringBoidIds
     //loop through local boids
     for (int i = 0; i < BoidCount; i++)
     {
+        if (i >= MAX_BOIDS_IN_A_CELL)
+            continue;
+        
         if (i != boidIndex && localBoidIDs[i] != -1)
         {
+            //printf("current boid vs compared boid: (%d, %d)\n", currentBoid.Id, boids[localBoidIDs[i]].Id);
             float distX = currentBoid.position.x - boids[localBoidIDs[i]].position.x;
             float distY = currentBoid.position.y - boids[localBoidIDs[i]].position.y;
             //add only if inside protected range
@@ -197,7 +201,9 @@ __device__ float2 calculateSeparation(int* localBoidIDs, int* neighboringBoidIds
     //loop through neighboring boids 
     for (int i = 0; i < BoidCount * 8; i++)
     {
-        if (localBoidIDs[i] != -1)
+        if (i >= MAX_BOIDS_IN_A_CELL * 8)
+            continue;
+        if (localBoidIDs[i] != -1 && i < MAX_BOIDS_IN_A_CELL * 8)
         {
             float distX = currentBoid.position.x - boids[neighboringBoidIds[i]].position.x;
             float distY = currentBoid.position.y - boids[neighboringBoidIds[i]].position.y;
@@ -214,8 +220,8 @@ __device__ float2 calculateSeparation(int* localBoidIDs, int* neighboringBoidIds
 }
 __global__ void calculateBoidLogic(uint2* gridList, Boid* boidArray, Cell* cellArray, int* lookUpTable, float deltaTime)
 {
-    __shared__ int localBoidIds[MAX_BOIDS_IN_A_CELL];
-    __shared__ int neighboringBoidIds[MAX_BOIDS_IN_A_CELL * 8];
+    __shared__ int localBoidIds[MAX_BOIDS_IN_A_CELL]; //10
+    __shared__ int neighboringBoidIds[MAX_BOIDS_IN_A_CELL * 8]; // size 80
 
     //new aproach to genrating boid arrays (now with more parallel computing :) )
     if (threadIdx.x < MAX_BOIDS_IN_A_CELL) // local array
@@ -229,7 +235,15 @@ __global__ void calculateBoidLogic(uint2* gridList, Boid* boidArray, Cell* cellA
             localBoidIds[threadIdx.x] = -1;
             return;
         }
+        //checking for bounds of local Boids in gridList array
+        if (lookupIndexLocal + threadIdx.x >= BoidCount) // 20
+        {
+            localBoidIds[threadIdx.x] = -1;
+            return;
+        }
         //retrive the cell boid pair from the index ofset by the index of thread
+        //printf("Block: %d, Thread: %d, index: %d max 100\n",
+        //    blockIdx.x, threadIdx.x, lookupIndexLocal + threadIdx.x);
         uint2 cellBoidPairLocal = gridList[lookupIndexLocal + threadIdx.x];
 
         //check if the retrived pair is still inside the cell
@@ -244,15 +258,29 @@ __global__ void calculateBoidLogic(uint2* gridList, Boid* boidArray, Cell* cellA
             localBoidIds[threadIdx.x] = -1;
             return;
         }
+
+        //printf("Block: %d, Thread: %d, GridList.x: %u, GridList.y: %u\n",
+        //    blockIdx.x, threadIdx.x, gridList[lookupIndexLocal + threadIdx.x].x, gridList[lookupIndexLocal + threadIdx.x].y);
+
     }
-    else if (threadIdx.x >= MAX_BOIDS_IN_A_CELL) // neighbor array 
+
+    if (threadIdx.x >= MAX_BOIDS_IN_A_CELL) // neighbor array max thread 863 
     {
-        int lookupIndexNeigbor = lookUpTable[blockIdx.x + CELL_ARRAY_SIZE];
+        int lookupIndexNeigbor = lookUpTable[blockIdx.x + CELL_ARRAY_SIZE]; // 732 is max number 
         if (lookupIndexNeigbor == -1)
         {
             neighboringBoidIds[threadIdx.x - MAX_BOIDS_IN_A_CELL] = -1;
             return;
         }
+
+        //checking for bouds of the gridList
+        if (lookupIndexNeigbor + threadIdx.x - MAX_BOIDS_IN_A_CELL >= BoidCount * 9) // if it is more than 1035 
+        {
+            neighboringBoidIds[threadIdx.x - MAX_BOIDS_IN_A_CELL] = -1;
+            return;
+        }
+        //printf("Block: %d, Thread: %d, index: %d Max 899\n",
+        //    blockIdx.x, threadIdx.x, lookupIndexNeigbor + threadIdx.x - MAX_BOIDS_IN_A_CELL);
         uint2 cellBoidPairNeighbor = gridList[lookupIndexNeigbor + threadIdx.x - MAX_BOIDS_IN_A_CELL];
         if (cellBoidPairNeighbor.x == gridList[lookupIndexNeigbor].x)
         {
@@ -263,20 +291,28 @@ __global__ void calculateBoidLogic(uint2* gridList, Boid* boidArray, Cell* cellA
             neighboringBoidIds[threadIdx.x - MAX_BOIDS_IN_A_CELL] = -1;
             return;
         }
+
+        //printf("Block: %d, Thread: %d, GridList.x: %u, GridList.y: %u\n",
+        //    blockIdx.x, threadIdx.x, gridList[lookupIndexNeigbor + threadIdx.x - MAX_BOIDS_IN_A_CELL].x, gridList[lookupIndexNeigbor + threadIdx.x - MAX_BOIDS_IN_A_CELL].y);
     }
     __syncthreads();
-
     //return unused threads
     if (threadIdx.x >= MAX_BOIDS_IN_A_CELL)
         return;
     if (localBoidIds[threadIdx.x] == -1)
         return;
 
-    int currentBoidId = localBoidIds[threadIdx.x];
-    Boid& currentBoid = boidArray[currentBoidId];
 
+    //printf("thread id passed 95: %d\n", threadIdx.x);
+
+    int currentBoidId = localBoidIds[threadIdx.x];
+    
+
+    Boid& currentBoid = boidArray[currentBoidId];
+    //printf("block and thread %d, %d. currentBoidID: %d. BoidsID %d\n", blockIdx.x, threadIdx.x, currentBoidId, currentBoid.Id);
     // Fish logic: Update velocity based on separation, alignment, and cohesion rules
     float2 separation = calculateSeparation(localBoidIds, neighboringBoidIds, threadIdx.x, boidArray, currentBoid);
+    //float2 separation = make_float2(1, 1);
 
     // Weighting factors for each rule
     float alignmentWeight = 1.0;
@@ -287,8 +323,8 @@ __global__ void calculateBoidLogic(uint2* gridList, Boid* boidArray, Cell* cellA
     //    alignmentWeight * alignment +
     //    cohesionWeight * cohesion;
 
-    float edgeAvoidanceFactor = 1;
-    float safeDistance = 15.0;      
+    float edgeAvoidanceFactor = 5;
+    float safeDistance = 20.0;      
 
     //edge detect
     if (currentBoid.position.x < safeDistance)
@@ -328,6 +364,7 @@ __global__ void calculateBoidLogic(uint2* gridList, Boid* boidArray, Cell* cellA
     currentBoid.position.x += currentBoid.velocity.x * deltaTime;
     currentBoid.position.y += currentBoid.velocity.y * deltaTime;
 
+
     __syncthreads();
 }
 __global__ void setUint2Values(uint2* array, int value, int count) {
@@ -363,7 +400,7 @@ int main()
     // Call the function to initialize Boids
     initializeBoids(WIDTH, HEIGHT, boidArray, BoidCount);
 
-    // Access and use the initialized Boids
+     //Access and use the initialized Boids
     //std::cout << "Boids array____________________________________________________________________________________" << std::endl;
     //for (const auto& boid : boidArray) {
     //    std::cout << "Boid Id: " << boid.Id << ", Position: (" << boid.position.x << ", " << boid.position.y << ")\n";
@@ -484,10 +521,13 @@ int main()
         setUint2Values << <BoidCount, 9 >> > (d_gridList, HIGHNUMBER, BoidCount * 9);
         cudaDeviceSynchronize();
 
+
         hashBoids << <1, BoidCount >> > (d_boidArray, d_gridList, d_cellArray, BoidCount, CELL_ARRAY_SIZE, WIDTH, HEIGHT);
         cudaDeviceSynchronize();
         //sort grid list
         SortGridList(d_gridList);
+
+
         //std::cout << "sorted array____________________________________________________________________________________" << std::endl;
         //uint2* hostGridList = new uint2[BoidCount * 9];
         //cudaMemcpy(hostGridList, d_gridList, BoidCount * sizeof(uint2) * 9, cudaMemcpyDeviceToHost);
@@ -500,6 +540,7 @@ int main()
         //        k++;
         //    }
         //}
+
         cudaDeviceSynchronize();
 
         //init lookup table array
@@ -510,15 +551,34 @@ int main()
         //create look up table
         CreateLookUpTable(d_gridList, d_boidArray, d_cellArray, d_lookUpTable);
         cudaDeviceSynchronize();
+
         //std::cout << "LookUp table____________________________________________________________________________________" << std::endl;
         //int* h_lookUptable = new int[CELL_ARRAY_SIZE * 2];
         //cudaMemcpy(h_lookUptable, d_lookUpTable, CELL_ARRAY_SIZE * 2 * sizeof(int), cudaMemcpyDeviceToHost);
         //for (int i = 0; i < CELL_ARRAY_SIZE * 2; ++i)
-        //    std::cout << "Cell index: " << i % CELL_ARRAY_SIZE << " starts at index: " << h_lookUptable[i] << std::endl;
+        //    std::cout << "index: " << i << " Cell index: " << i % CELL_ARRAY_SIZE << " starts at index: " << h_lookUptable[i] << std::endl;
+
+
 
 
         CalculateBoidLogic(d_gridList, d_boidArray, d_cellArray, d_lookUpTable, deltaTime);
         cudaDeviceSynchronize();
+
+        //std::cout << "reseted array____________________________________________________________________________________" << std::endl;
+        //uint2* tmp = new uint2[BoidCount * 9];
+        //cudaMemcpy(tmp, d_gridList, BoidCount * sizeof(uint2) * 9, cudaMemcpyDeviceToHost);
+        //int k2 = 0;
+        //for (int i = 0; i < 9; i++)
+        //{
+        //    for (int j = 0; j < BoidCount; j++)
+        //    {
+        //        std::cout << "id: " << k2 << " cell Id: " << tmp[k2].x << " boid Id: " << tmp[k2].y << std::endl;
+        //        k2++;
+        //    }
+        //}
+        //delete tmp;
+
+
         cudaMemcpy(boidArray, d_boidArray, BoidCount * sizeof(Boid), cudaMemcpyDeviceToHost);
 
 
@@ -581,6 +641,15 @@ void processInput(GLFWwindow* window)
 void CalculateBoidLogic(uint2* d_gridList, Boid* d_boidArray, Cell* d_cellArray, int* d_lookUpTable, float deltaTime)
 {
     calculateBoidLogic << < CELL_ARRAY_SIZE, MAX_BOIDS_IN_A_CELL * 9>> > (d_gridList, d_boidArray, d_cellArray, d_lookUpTable, deltaTime);
+
+    // Check for errors
+    checkCudaLastError("kernel launch");
+
+    // Wait for the kernel to finish
+    cudaDeviceSynchronize();
+
+    // Check for errors again after synchronization
+    checkCudaLastError("kernel synchronization");
 }
 void CreateLookUpTable(uint2* d_gridList, Boid* d_boidArray, Cell* d_cellArray, int* d_lookUpTable)
 {
