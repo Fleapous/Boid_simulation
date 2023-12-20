@@ -18,7 +18,7 @@
 #include <cmath>
 #include <iostream>
 
-#define BoidCount 10000
+#define BOID_COUNT 15000
 #define CELL_ARRAY_SIZE 5625
 
 #define WIDTH 1500
@@ -44,7 +44,7 @@
 #define MATCHINGFACTOR 0.01
 #define CENTERINGFACTOR 0.08
 
-uint2 gridList[BoidCount];
+uint2 gridList[BOID_COUNT];
 
 struct vec2 {
     float x;
@@ -58,15 +58,6 @@ public:
     Cell() : Id(0), position({ 0.0f, 0.0f }) {}
     Cell(int id, vec2 pos) : Id(id), position(pos) {}
 };
-class Boid {
-public:
-    int Id;
-    vec2 position;
-    float2 velocity;
-
-    Boid() : Id(0), position({ 0.0f, 0.0f }), velocity({ 10,10 }) {}
-    Boid(int id, vec2 pos) : Id(id), position(pos), velocity({ 10,10 }) {}
-};
 struct CompareX {
     __host__ __device__
         bool operator()(const uint2& a, const uint2& b) const {
@@ -74,15 +65,15 @@ struct CompareX {
     }
 };
 
-void initializeBoids(int width, int height, Boid(&boidArray)[BoidCount], int size);
+void initializeBoids(float(&PosX)[BOID_COUNT], float(&PosY)[BOID_COUNT], float(&Vx)[BOID_COUNT], float(&Vy)[BOID_COUNT]);
 void SortGridList(uint2* d_gridList);
 void initializeCells(int width, int height, Cell(&cellArray)[CELL_ARRAY_SIZE], int cellArraySize);
-void CreateLookUpTable(uint2* d_gridList, Boid* d_boidArray, Cell* d_cellArray, int* d_lookUpTable);
-void CalculateBoidLogic(uint2* d_gridList, Boid* d_boidArray, Cell* d_cellArray, int* d_lookUpTable, float deltaTime);
+void CreateLookUpTable(uint2* d_gridList, int* d_lookUpTable);
+void CalculateBoidLogic(uint2* d_gridList, float* PosX, float* PosY, float* Vx, float* Vy, Cell* d_cellArray, int* d_lookUpTable, float deltaTime);
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void processInput(GLFWwindow* window);
 void SetUnit2Values(uint2* array);
-void HashBoids(Boid* d_BoidArray, uint2* d_gridList);
+void HashBoids(float* PosX, float* PosY, uint2* d_gridList);
 void checkCudaError(cudaError_t cudaStatus, const char* errorMessage) {
     if (cudaStatus != cudaSuccess) {
         std::cerr << errorMessage << " failed: " << cudaGetErrorString(cudaStatus) << "\n";
@@ -98,12 +89,12 @@ void checkCudaLastError(const char* msg) {
     }
 }
 
-__global__ void hashBoids(Boid* boidArray, uint2* gridList) {
+__global__ void hashBoids(float* PosX, float* PosY, uint2* gridList) {
     int boidIndex = threadIdx.x + blockIdx.x * blockDim.x;
 
-    if (boidIndex < BoidCount) {
-        int boidXPos = static_cast<int>(static_cast<int>(boidArray[boidIndex].position.y / (HEIGHT / sqrt((float)CELL_ARRAY_SIZE))) * sqrt((float)CELL_ARRAY_SIZE)); // only need the integer part 
-        int boidYPos = static_cast<int>(static_cast<int>(boidArray[boidIndex].position.x / (WIDTH / sqrt((float)CELL_ARRAY_SIZE))));
+    if (boidIndex < BOID_COUNT) {
+        int boidXPos = static_cast<int>(static_cast<int>(PosY[boidIndex] / (HEIGHT / sqrt((float)CELL_ARRAY_SIZE))) * sqrt((float)CELL_ARRAY_SIZE)); // only need the integer part 
+        int boidYPos = static_cast<int>(static_cast<int>(PosX[boidIndex] / (WIDTH / sqrt((float)CELL_ARRAY_SIZE))));
         int cellIndex = boidXPos + boidYPos;
         gridList[boidIndex] = make_uint2(cellIndex, boidIndex);
 
@@ -118,7 +109,7 @@ __global__ void hashBoids(Boid* boidArray, uint2* gridList) {
         int yOffset = static_cast<int>((cellIndex - xOffset) / height);
 
         //adding neighbors 
-        int stride = BoidCount;
+        int stride = BOID_COUNT;
         //left cell
         if (xOffset != 0)
             gridList[boidIndex + stride] = make_uint2(cellIndex - 1, boidIndex);
@@ -153,13 +144,13 @@ __global__ void hashBoids(Boid* boidArray, uint2* gridList) {
             gridList[boidIndex + stride * 8] = make_uint2(cellIndex + width - 1, boidIndex);
     }
 }
-__global__ void makeLookupTable(uint2* gridList, Boid* boidArray, Cell* cellArray, int* lookUpTable)
+__global__ void makeLookupTable(uint2* gridList, int* lookUpTable)
 {
     int gridListIndex = blockIdx.x * blockDim.x + threadIdx.x;
     if (gridList[gridListIndex].x == HIGHNUMBER)
         return;
 
-    if (gridListIndex < BoidCount)
+    if (gridListIndex < BOID_COUNT)
     {
         if (gridListIndex == 0)
         {
@@ -175,7 +166,7 @@ __global__ void makeLookupTable(uint2* gridList, Boid* boidArray, Cell* cellArra
     }
     else
     {
-        if (gridListIndex == BoidCount)
+        if (gridListIndex == BOID_COUNT)
         {
             lookUpTable[gridList[gridListIndex].x + CELL_ARRAY_SIZE] = gridListIndex;
         }
@@ -188,7 +179,7 @@ __global__ void makeLookupTable(uint2* gridList, Boid* boidArray, Cell* cellArra
 
 }
 
-__device__ float2 calculateSeparation(int* localBoidIDs, int* neighboringBoidIds, int boidIndex, Boid* boids, Boid currentBoid) {
+__device__ float2 calculateSeparation(int* localBoidIDs, int* neighboringBoidIds, int boidIndex, float* PosX, float* PosY, float currentPosX, float currentPosY) {
     float closeDx = 0, closeDy = 0;
     //loop through local boids
     for (int i = 0; i < MAX_BOIDS_IN_A_CELL; i++)
@@ -196,8 +187,8 @@ __device__ float2 calculateSeparation(int* localBoidIDs, int* neighboringBoidIds
         if (i != boidIndex && localBoidIDs[i] != -1)
         {
             //printf("current boid vs compared boid: (%d, %d)\n", currentBoid.Id, boids[localBoidIDs[i]].Id);
-            float distX = currentBoid.position.x - boids[localBoidIDs[i]].position.x;
-            float distY = currentBoid.position.y - boids[localBoidIDs[i]].position.y;
+            float distX = currentPosX - PosX[localBoidIDs[i]];
+            float distY = currentPosY - PosY[localBoidIDs[i]];
             //add only if inside protected range
             if (sqrt(distX * distX + distY * distY) < PROTECTED_RANGE)
             {
@@ -212,8 +203,8 @@ __device__ float2 calculateSeparation(int* localBoidIDs, int* neighboringBoidIds
     {
         if (localBoidIDs[i] != -1 && i < MAX_BOIDS_IN_A_CELL * 8)
         {
-            float distX = currentBoid.position.x - boids[neighboringBoidIds[i]].position.x;
-            float distY = currentBoid.position.y - boids[neighboringBoidIds[i]].position.y;
+            float distX = currentPosX - PosX[neighboringBoidIds[i]];
+            float distY = currentPosY - PosY[neighboringBoidIds[i]];
             //add only if inside protected range
             if (sqrt(distX * distX + distY * distY) < PROTECTED_RANGE)
             {
@@ -225,12 +216,12 @@ __device__ float2 calculateSeparation(int* localBoidIDs, int* neighboringBoidIds
 
     return make_float2(closeDx, closeDy);
 }
-__device__ float2 calculateAlignment(int* localBoidIDs, int* neighboringBoidIds, int boidIndex, Boid* boids, Boid currentBoid) // Look into range calculation!!!!!!!!!!!!!!
+__device__ float2 calculateAlignment(int* localBoidIDs, int* neighboringBoidIds, int boidIndex, float* PosX, float* PosY, float* Vx, float* Vy, float currentPosX, float currentPosY) // Look into range calculation!!!!!!!!!!!!!!
 {
     float xvelAvg = 0, yvelAvg = 0;
     int neighboring_boids = 0;
     //loop through local boids
-    for (int i = 0; i < BoidCount; i++)
+    for (int i = 0; i < BOID_COUNT; i++)
     {
         if (i >= MAX_BOIDS_IN_A_CELL)
             break;
@@ -238,32 +229,32 @@ __device__ float2 calculateAlignment(int* localBoidIDs, int* neighboringBoidIds,
         if (i != boidIndex && localBoidIDs[i] != -1)
         {
             //printf("current boid vs compared boid: (%d, %d)\n", currentBoid.Id, boids[localBoidIDs[i]].Id);
-            float distX = currentBoid.position.x - boids[localBoidIDs[i]].position.x;
-            float distY = currentBoid.position.y - boids[localBoidIDs[i]].position.y;
+            float distX = currentPosX - PosX[localBoidIDs[i]];
+            float distY = currentPosY - PosY[localBoidIDs[i]];
             //add only if inside protected range
             if (sqrt(distX * distX + distY * distY) < VISIBLE_RANGE)
             {
-                xvelAvg += boids[localBoidIDs[i]].velocity.x;
-                yvelAvg += boids[localBoidIDs[i]].velocity.y;
+                xvelAvg += Vx[localBoidIDs[i]];
+                yvelAvg += Vy[localBoidIDs[i]];
                 neighboring_boids++;
             }
 
         }
     }
     //loop through neighboring boids 
-    for (int i = 0; i < BoidCount * 8; i++)
+    for (int i = 0; i < BOID_COUNT * 8; i++)
     {
         if (i >= MAX_BOIDS_IN_A_CELL * 8)
             break;
         if (localBoidIDs[i] != -1 && i < MAX_BOIDS_IN_A_CELL * 8)
         {
-            float distX = currentBoid.position.x - boids[neighboringBoidIds[i]].position.x;
-            float distY = currentBoid.position.y - boids[neighboringBoidIds[i]].position.y;
+            float distX = currentPosX - PosX[neighboringBoidIds[i]];
+            float distY = currentPosY - PosY[neighboringBoidIds[i]];
             //add only if inside protected range
             if (sqrt(distX * distX + distY * distY) < VISIBLE_RANGE)
             {
-                xvelAvg += boids[neighboringBoidIds[i]].velocity.x;
-                yvelAvg += boids[neighboringBoidIds[i]].velocity.y;
+                xvelAvg += Vx[neighboringBoidIds[i]];
+                yvelAvg += Vy[neighboringBoidIds[i]];
                 neighboring_boids++;
             }
         }
@@ -278,12 +269,12 @@ __device__ float2 calculateAlignment(int* localBoidIDs, int* neighboringBoidIds,
 
     return make_float2(xvelAvg, yvelAvg);
 }
-__device__ float2 calculateCohesion(int* localBoidIDs, int* neighboringBoidIds, int boidIndex, Boid* boids, Boid currentBoid)
+__device__ float2 calculateCohesion(int* localBoidIDs, int* neighboringBoidIds, int boidIndex, float* PosX, float* PosY, float currentPosX, float currentPosY)
 {
     float xposAvg = 0, yposAvg = 0;
     int neighboring_boids = 0;
     //loop through local boids
-    for (int i = 0; i < BoidCount; i++)
+    for (int i = 0; i < BOID_COUNT; i++)
     {
         if (i >= MAX_BOIDS_IN_A_CELL)
             break;
@@ -291,32 +282,32 @@ __device__ float2 calculateCohesion(int* localBoidIDs, int* neighboringBoidIds, 
         if (i != boidIndex && localBoidIDs[i] != -1)
         {
             //printf("current boid vs compared boid: (%d, %d)\n", currentBoid.Id, boids[localBoidIDs[i]].Id);
-            float distX = currentBoid.position.x - boids[localBoidIDs[i]].position.x;
-            float distY = currentBoid.position.y - boids[localBoidIDs[i]].position.y;
+            float distX = currentPosX - PosX[localBoidIDs[i]];
+            float distY = currentPosY - PosY[localBoidIDs[i]];
             //add only if inside protected range
             if (sqrt(distX * distX + distY * distY) < VISIBLE_RANGE)
             {
-                xposAvg += boids[localBoidIDs[i]].position.x;
-                yposAvg += boids[localBoidIDs[i]].position.y;
+                xposAvg += PosX[localBoidIDs[i]];
+                yposAvg += PosY[localBoidIDs[i]];
                 neighboring_boids++;
             }
 
         }
     }
     //loop through neighboring boids 
-    for (int i = 0; i < BoidCount * 8; i++)
+    for (int i = 0; i < BOID_COUNT * 8; i++)
     {
         if (i >= MAX_BOIDS_IN_A_CELL * 8)
             break;
         if (localBoidIDs[i] != -1 && i < MAX_BOIDS_IN_A_CELL * 8)
         {
-            float distX = currentBoid.position.x - boids[neighboringBoidIds[i]].position.x;
-            float distY = currentBoid.position.y - boids[neighboringBoidIds[i]].position.y;
+            float distX = currentPosX - PosX[neighboringBoidIds[i]];
+            float distY = currentPosY - PosY[neighboringBoidIds[i]];
             //add only if inside protected range
             if (sqrt(distX * distX + distY * distY) < VISIBLE_RANGE)
             {
-                xposAvg += boids[neighboringBoidIds[i]].position.x;
-                yposAvg += boids[neighboringBoidIds[i]].position.y;
+                xposAvg += PosX[neighboringBoidIds[i]];
+                yposAvg += PosY[neighboringBoidIds[i]];
                 neighboring_boids++;
             }
         }
@@ -331,7 +322,7 @@ __device__ float2 calculateCohesion(int* localBoidIDs, int* neighboringBoidIds, 
 
     return make_float2(xposAvg, yposAvg);
 }
-__global__ void calculateBoidLogic(uint2* gridList, Boid* boidArray, Cell* cellArray, int* lookUpTable, float deltaTime)
+__global__ void calculateBoidLogic(uint2* gridList, float* PosX, float* PosY, float* Vx, float* Vy, Cell* cellArray, int* lookUpTable, float deltaTime)
 {
     __shared__ int localBoidIds[MAX_BOIDS_IN_A_CELL];
     __shared__ int neighboringBoidIds[MAX_BOIDS_IN_A_CELL * 8];
@@ -348,7 +339,7 @@ __global__ void calculateBoidLogic(uint2* gridList, Boid* boidArray, Cell* cellA
             return;
         }
         //checking for bounds of local Boids in gridList array
-        if (lookupIndexLocal + threadIdx.x >= BoidCount) 
+        if (lookupIndexLocal + threadIdx.x >= BOID_COUNT) 
         {
             localBoidIds[threadIdx.x] = -1;
             return;
@@ -386,7 +377,7 @@ __global__ void calculateBoidLogic(uint2* gridList, Boid* boidArray, Cell* cellA
         }
 
         //checking for bouds of the gridList
-        if (lookupIndexNeigbor + threadIdx.x - MAX_BOIDS_IN_A_CELL >= BoidCount * 9) // if it is more than 1035 
+        if (lookupIndexNeigbor + threadIdx.x - MAX_BOIDS_IN_A_CELL >= BOID_COUNT * 9) // if it is more than 1035 
         {
             neighboringBoidIds[threadIdx.x - MAX_BOIDS_IN_A_CELL] = -1;
             return;
@@ -416,64 +407,70 @@ __global__ void calculateBoidLogic(uint2* gridList, Boid* boidArray, Cell* cellA
         return;
 
     int currentBoidId = localBoidIds[threadIdx.x];
-    Boid& currentBoid = boidArray[currentBoidId];
+    //Boid& currentBoid = boidArray[currentBoidId];
+
+    float& currentPosX = PosX[currentBoidId];
+    float& currentPosY = PosY[currentBoidId];
+    float& currentVx = Vx[currentBoidId];
+    float& currentVy = Vy[currentBoidId];
+
     //printf("block and thread %d, %d. currentBoidID: %d. BoidsID %d\n", blockIdx.x, threadIdx.x, currentBoidId, currentBoid.Id);
     // Fish logic: Update velocity based on separation, alignment, and cohesion rules
-    float2 separation = calculateSeparation(localBoidIds, neighboringBoidIds, threadIdx.x, boidArray, currentBoid);
-    float2 alignment = calculateAlignment(localBoidIds, neighboringBoidIds, threadIdx.x, boidArray, currentBoid);
-    float2 cohesion = calculateCohesion(localBoidIds, neighboringBoidIds, threadIdx.x, boidArray, currentBoid);
+    float2 separation = calculateSeparation(localBoidIds, neighboringBoidIds, threadIdx.x, PosX, PosY, currentPosX, currentPosY);
+    float2 alignment = calculateAlignment(localBoidIds, neighboringBoidIds, threadIdx.x, PosX, PosY, Vx, Vy, currentPosX, currentPosY);
+    float2 cohesion = calculateCohesion(localBoidIds, neighboringBoidIds, threadIdx.x, PosX, PosY, currentPosX, currentPosY);
 
     // Apply separation
-    currentBoid.velocity.x += separation.x * AVOIDFACTOR;
-    currentBoid.velocity.y += separation.y * AVOIDFACTOR;
+    currentVx += separation.x * AVOIDFACTOR;
+    currentVy += separation.y * AVOIDFACTOR;
 
     // Apply alignment
-    currentBoid.velocity.x += (alignment.x - currentBoid.velocity.x) * MATCHINGFACTOR;
-    currentBoid.velocity.y += (alignment.y - currentBoid.velocity.y) * MATCHINGFACTOR;
+    currentVx += (alignment.x - currentVx) * MATCHINGFACTOR;
+    currentVy += (alignment.y - currentVy) * MATCHINGFACTOR;
 
     // Apply Cohesion
-    currentBoid.velocity.x += (cohesion.x - currentBoid.position.x) * CENTERINGFACTOR;
-    currentBoid.velocity.y += (cohesion.y - currentBoid.position.y) * CENTERINGFACTOR;
+    currentVx += (cohesion.x - currentPosX) * CENTERINGFACTOR;
+    currentVy += (cohesion.y - currentPosY) * CENTERINGFACTOR;
 
     // Edge detection
     float2 edgeAvoidance = make_float2(0.0f, 0.0f);
 
-    if (currentBoid.position.x < EDGE_RANGE)
+    if (currentPosX < EDGE_RANGE)
         edgeAvoidance.x += EDGE_AVOIDANCE_FACTOR;
-    if (currentBoid.position.x > WIDTH - EDGE_RANGE)
+    if (currentPosX > WIDTH - EDGE_RANGE)
         edgeAvoidance.x -= EDGE_AVOIDANCE_FACTOR;
 
-    if (currentBoid.position.y < EDGE_RANGE)
+    if (currentPosY < EDGE_RANGE)
         edgeAvoidance.y += EDGE_AVOIDANCE_FACTOR;
-    if (currentBoid.position.y > HEIGHT - EDGE_RANGE)
+    if (currentPosY > HEIGHT - EDGE_RANGE)
         edgeAvoidance.y -= EDGE_AVOIDANCE_FACTOR;
 
     // Apply edge avoidance
-    currentBoid.velocity.x += edgeAvoidance.x;
-    currentBoid.velocity.y += edgeAvoidance.y;
+    currentVx += edgeAvoidance.x;
+    currentVy += edgeAvoidance.y;
 
-    float speed = static_cast<float>(sqrt(currentBoid.velocity.x * currentBoid.velocity.x + currentBoid.velocity.y * currentBoid.velocity.y));
+    float speed = static_cast<float>(sqrt(currentVx * currentVx + currentVy * currentVy));
 
     //Enforce min and max speeds
     if (speed < MIN_SPEED)
     {
-        currentBoid.velocity.x = (currentBoid.velocity.x / speed) * MIN_SPEED;
-        currentBoid.velocity.y = (currentBoid.velocity.y / speed) * MIN_SPEED;
+        currentVx = (currentVx / speed) * MIN_SPEED;
+        currentVy = (currentVy / speed) * MIN_SPEED;
     }
     if (speed > MAX_SPEED)
     {
-        currentBoid.velocity.x = (currentBoid.velocity.x / speed) * MAX_SPEED;
-        currentBoid.velocity.y = (currentBoid.velocity.y / speed) * MAX_SPEED;
+        currentVx = (currentVx / speed) * MAX_SPEED;
+        currentVy = (currentVy / speed) * MAX_SPEED;
     }
 
-    currentBoid.position.x += currentBoid.velocity.x * deltaTime;
-    currentBoid.position.y += currentBoid.velocity.y * deltaTime;
+    currentPosX += currentVx * deltaTime;
+    currentPosY += currentVy * deltaTime;
 
     __syncthreads();
 }
 __global__ void setUint2Values(uint2* array) {
     int index = threadIdx.x + blockIdx.x * blockDim.x;
-    if (index < BoidCount * 9) {
+    if (index < BOID_COUNT * 9) {
         array[index].x = HIGHNUMBER;
         array[index].y = HIGHNUMBER;
     }
@@ -492,7 +489,7 @@ const char* fragmentShaderSource = R"(
     #version 330 core
     out vec4 FragColor;
     void main() {
-        FragColor = vec4(1.0f, 0.5f, 0.2f, 1.0f);
+        FragColor = vec4(0.1411764705882353f, 0.41568627450980394f, 0.45098039215686275f, 1.0f);
     }
 )";
 
@@ -518,15 +515,19 @@ void calculateFPS(GLFWwindow* window) {
 
 int main()
 {
-    Boid boidArray[BoidCount];
+    float PosX[BOID_COUNT];
+    float PosY[BOID_COUNT];
+
+    float Vx[BOID_COUNT];
+    float Vy[BOID_COUNT];
 
     // Call the function to initialize Boids
-    initializeBoids(WIDTH, HEIGHT, boidArray, BoidCount);
+    initializeBoids(PosY, PosX, Vx, Vy);
 
     //Access and use the initialized Boids
    //std::cout << "Boids array____________________________________________________________________________________" << std::endl;
-   //for (const auto& boid : boidArray) {
-   //    std::cout << "Boid Id: " << boid.Id << ", Position: (" << boid.position.x << ", " << boid.position.y << ")\n";
+   //for (int i = 0; i < BOID_COUNT; i++) {
+   //    std::cout << "Boid Id: " << i << ", Position: (" << PosX[i] << ", " << PosY[i] << ")\n";
    //}
 
     Cell cellArray[CELL_ARRAY_SIZE];
@@ -570,7 +571,7 @@ int main()
 
     glGenBuffers(1, &VBO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, BoidCount * sizeof(vec2), nullptr, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, BOID_COUNT * sizeof(vec2), nullptr, GL_DYNAMIC_DRAW);
 
     unsigned int vertexShader;
     vertexShader = glCreateShader(GL_VERTEX_SHADER);
@@ -617,19 +618,32 @@ int main()
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(vec2), (void*)0);
     glEnableVertexAttribArray(0);
 
-    Boid* d_boidArray;
+    float* d_PosX;
+    float* d_PosY;
+    float* d_Vx;
+    float* d_Vy;
+
     uint2* d_gridList;
     Cell* d_cellArray;
     int* d_lookUpTable;
-    std::vector<vec2> renderArray(BoidCount);
+    std::vector<vec2> renderArray(BOID_COUNT);
 
-    cudaMalloc((void**)&d_boidArray, BoidCount * sizeof(Boid));
-    cudaMalloc((void**)&d_gridList, BoidCount * 9 * sizeof(uint2));
+    cudaMalloc((void**)&d_PosX, BOID_COUNT * sizeof(float));
+    cudaMalloc((void**)&d_PosY, BOID_COUNT * sizeof(float));
+    cudaMalloc((void**)&d_Vx, BOID_COUNT * sizeof(float));
+    cudaMalloc((void**)&d_Vy, BOID_COUNT * sizeof(float));
+
+    cudaMalloc((void**)&d_gridList, BOID_COUNT * 9 * sizeof(uint2));
     cudaMalloc((void**)&d_cellArray, CELL_ARRAY_SIZE * sizeof(Cell));
 
     // Copy boidArray and cellArray to device memory
     checkCudaError(cudaMalloc((void**)&d_lookUpTable, CELL_ARRAY_SIZE * 2 * sizeof(int)), "mallocFailed");
-    cudaMemcpy(d_boidArray, boidArray, BoidCount * sizeof(Boid), cudaMemcpyHostToDevice);
+   
+    cudaMemcpy(d_PosX, PosX, BOID_COUNT * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_PosY, PosY, BOID_COUNT * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_Vx, Vx, BOID_COUNT * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_Vy, Vy, BOID_COUNT * sizeof(float), cudaMemcpyHostToDevice);
+
     cudaMemcpy(d_cellArray, cellArray, CELL_ARRAY_SIZE * sizeof(Cell), cudaMemcpyHostToDevice);
 
     //main simulation loop
@@ -642,16 +656,16 @@ int main()
         lastFrameTime = currentFrameTime;
 
         SetUnit2Values(d_gridList);
-        HashBoids(d_boidArray, d_gridList);
+        HashBoids(d_PosX, d_PosY, d_gridList);
         SortGridList(d_gridList);
 
         //std::cout << "sorted array____________________________________________________________________________________" << std::endl;
-        //uint2* hostGridList = new uint2[BoidCount * 9];
-        //cudaMemcpy(hostGridList, d_gridList, BoidCount * sizeof(uint2) * 9, cudaMemcpyDeviceToHost);
+        //uint2* hostGridList = new uint2[BOID_COUNT * 9];
+        //cudaMemcpy(hostGridList, d_gridList, BOID_COUNT * sizeof(uint2) * 9, cudaMemcpyDeviceToHost);
         //int k = 0;
         //for (int i = 0; i < 9; i++)
         //{
-        //    for (int j = 0; j < BoidCount; j++)
+        //    for (int j = 0; j < BOID_COUNT; j++)
         //    {
         //        std::cout <<"id: " << k << " cell Id: " << hostGridList[k].x << " boid Id: " << hostGridList[k].y << std::endl;
         //        k++;
@@ -659,13 +673,10 @@ int main()
         //}
 
         cudaDeviceSynchronize();
-
-        //init lookup table array PUt outside!!!!!!!!!!!!!!!
-
         cudaMemset(d_lookUpTable, -1, CELL_ARRAY_SIZE * 2 * sizeof(int));
 
         //create look up table
-        CreateLookUpTable(d_gridList, d_boidArray, d_cellArray, d_lookUpTable);
+        CreateLookUpTable(d_gridList, d_lookUpTable);
         cudaDeviceSynchronize();
 
         //std::cout << "LookUp table____________________________________________________________________________________" << std::endl;
@@ -674,16 +685,16 @@ int main()
         //for (int i = 0; i < CELL_ARRAY_SIZE * 2; ++i)
         //    std::cout << "index: " << i << " Cell index: " << i % CELL_ARRAY_SIZE << " starts at index: " << h_lookUptable[i] << std::endl;
 
-        CalculateBoidLogic(d_gridList, d_boidArray, d_cellArray, d_lookUpTable, deltaTime);
+        CalculateBoidLogic(d_gridList, d_PosX, d_PosY, d_Vx, d_Vy, d_cellArray, d_lookUpTable, deltaTime);
         cudaDeviceSynchronize();
 
         //std::cout << "reseted array____________________________________________________________________________________" << std::endl;
-        //uint2* tmp = new uint2[BoidCount * 9];
-        //cudaMemcpy(tmp, d_gridList, BoidCount * sizeof(uint2) * 9, cudaMemcpyDeviceToHost);
+        //uint2* tmp = new uint2[BOID_COUNT * 9];
+        //cudaMemcpy(tmp, d_gridList, BOID_COUNT * sizeof(uint2) * 9, cudaMemcpyDeviceToHost);
         //int k2 = 0;
         //for (int i = 0; i < 9; i++)
         //{
-        //    for (int j = 0; j < BoidCount; j++)
+        //    for (int j = 0; j < BOID_COUNT; j++)
         //    {
         //        std::cout << "id: " << k2 << " cell Id: " << tmp[k2].x << " boid Id: " << tmp[k2].y << std::endl;
         //        k2++;
@@ -691,13 +702,16 @@ int main()
         //}
         //delete tmp;
 
-        cudaMemcpy(boidArray, d_boidArray, BoidCount * sizeof(Boid), cudaMemcpyDeviceToHost);
+        cudaMemcpy(PosX, d_PosX, BOID_COUNT * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(PosY, d_PosY, BOID_COUNT * sizeof(float), cudaMemcpyDeviceToHost);
 
-        // Extract only positions for rendering std::transform!
-        for (int i = 0; i < BoidCount; ++i)
+         //Extract only positions for rendering std::transform!
+        for (int i = 0; i < BOID_COUNT; ++i)
         {
-            float normalized_x = (2.0f * boidArray[i].position.x / WIDTH) - 1.0f;
-            float normalized_y = 1.0f - (2.0f * boidArray[i].position.y / HEIGHT);
+            //std::cout << "positions: " << PosX[i] << ", " << PosY[i] << std::endl;
+           
+            float normalized_x = (2.0f * PosX[i] / WIDTH) - 1.0f;
+            float normalized_y = 1.0f - (2.0f * PosY[i] / HEIGHT);
 
             renderArray[i].x = normalized_x;
             renderArray[i].y = normalized_y;
@@ -707,18 +721,19 @@ int main()
 
         // Update the VBO with the new boid positions
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, BoidCount * sizeof(vec2), renderArray.data());
+        glBufferSubData(GL_ARRAY_BUFFER, 0, BOID_COUNT * sizeof(vec2), renderArray.data());
         //renderArray.clear();
 
         // OpenGL rendering
-        glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+        
+        glClearColor(0.08627450980392157f, 0.058823529411764705f, 0.1607843137254902f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
         //shader program and VAO
         glUseProgram(shaderProgram);
         glBindVertexArray(VAO);
         glPointSize(2.0f);
-        glDrawArrays(GL_POINTS, 0, BoidCount); 
+        glDrawArrays(GL_POINTS, 0, BOID_COUNT); 
 
         calculateFPS(window);
         glfwPollEvents();
@@ -729,11 +744,17 @@ int main()
         //std::cout << std::endl;
     }
     // Free allocated memory on the device
-    cudaFree(d_boidArray);
     cudaFree(d_gridList);
     cudaFree(d_cellArray);
     cudaFree(d_lookUpTable);
-    delete[] boidArray;
+    cudaFree(d_PosX);
+    cudaFree(d_PosY);
+    cudaFree(d_Vx);
+    cudaFree(d_Vy);
+    delete[] PosX;
+    delete[] PosY;
+    delete[] Vx;
+    delete[] Vy;
     cudaDeviceReset();
 
     glfwTerminate();
@@ -749,38 +770,35 @@ void processInput(GLFWwindow* window)
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 }
-void CalculateBoidLogic(uint2* d_gridList, Boid* d_boidArray, Cell* d_cellArray, int* d_lookUpTable, float deltaTime)
+void CalculateBoidLogic(uint2* d_gridList, float* PosX, float* PosY, float* Vx, float* Vy, Cell* d_cellArray, int* d_lookUpTable, float deltaTime)
 {
-    calculateBoidLogic << < CELL_ARRAY_SIZE, MAX_BOIDS_IN_A_CELL * 9 >> > (d_gridList, d_boidArray, d_cellArray, d_lookUpTable, deltaTime);
+    calculateBoidLogic << < CELL_ARRAY_SIZE, MAX_BOIDS_IN_A_CELL * 9 >> > (d_gridList, PosX, PosY, Vx, Vy, d_cellArray, d_lookUpTable, deltaTime);
 
     // Check for errors
     checkCudaLastError("kernel launch");
 
     // Wait for the kernel to finish
     cudaDeviceSynchronize();
-
-    // Check for errors again after synchronization
-    checkCudaLastError("kernel synchronization");
 }
-void CreateLookUpTable(uint2* d_gridList, Boid* d_boidArray, Cell* d_cellArray, int* d_lookUpTable)
+void CreateLookUpTable(uint2* d_gridList, int* d_lookUpTable)
 {
     int threadsPerBlock = 256;
 
     // Calculate the number of blocks needed based on the total number of elements
-    int numBlocks = (BoidCount * 9 + threadsPerBlock - 1) / threadsPerBlock;
+    int numBlocks = (BOID_COUNT * 9 + threadsPerBlock - 1) / threadsPerBlock;
 
     // Launch the kernel with the adjusted configuration
-    makeLookupTable << <BoidCount, 9>> > (d_gridList, d_boidArray, d_cellArray, d_lookUpTable);
+    makeLookupTable << <BOID_COUNT, 9>> > (d_gridList, d_lookUpTable);
 }
 void SortGridList(uint2* d_gridList)
 {
-    thrust::device_vector<uint2> dev_vec_gridList(d_gridList, d_gridList + BoidCount * 9);
+    thrust::device_vector<uint2> dev_vec_gridList(d_gridList, d_gridList + BOID_COUNT * 9);
 
     // Sort 
-    thrust::sort(dev_vec_gridList.begin(), dev_vec_gridList.begin() + BoidCount, CompareX());
+    thrust::sort(dev_vec_gridList.begin(), dev_vec_gridList.begin() + BOID_COUNT, CompareX());
     checkCudaLastError("Sort first half");
 
-    thrust::sort(dev_vec_gridList.begin() + BoidCount, dev_vec_gridList.end(), CompareX());
+    thrust::sort(dev_vec_gridList.begin() + BOID_COUNT, dev_vec_gridList.end(), CompareX());
     checkCudaLastError("Sort second half");
 
     // Copy the sorted data back to the device
@@ -794,34 +812,34 @@ void SetUnit2Values(uint2* d_gridList)
     int threadsPerBlock = 256; 
 
     // Calculate the number of blocks needed based on the total number of elements
-    int numBlocks = (BoidCount * 9 + threadsPerBlock - 1) / threadsPerBlock;
+    int numBlocks = (BOID_COUNT * 9 + threadsPerBlock - 1) / threadsPerBlock;
 
     // Launch the kernel with the specified configuration
     setUint2Values << <numBlocks, threadsPerBlock >> > (d_gridList);
     cudaDeviceSynchronize();
 }
-void HashBoids(Boid* d_boidArray, uint2* d_gridList)
+void HashBoids(float* PosX, float* PosY, uint2* d_gridList)
 {
     // Choose a block size that is a multiple of 32 (warp size) 
     int threadsPerBlock = 256; 
 
     // Calculate the number of blocks needed based on the total number of elements
-    int numBlocks = (BoidCount * 9 + threadsPerBlock - 1) / threadsPerBlock;
+    int numBlocks = (BOID_COUNT * 9 + threadsPerBlock - 1) / threadsPerBlock;
 
-    hashBoids << <numBlocks, threadsPerBlock >> > (d_boidArray, d_gridList);
+    hashBoids << <numBlocks, threadsPerBlock >> > (PosX, PosY, d_gridList);
     cudaDeviceSynchronize();
 }
-void initializeBoids(int width, int height, Boid(&boidArray)[BoidCount], int size) {
+void initializeBoids(float(&PosX)[BOID_COUNT], float(&PosY)[BOID_COUNT], float(&Vx)[BOID_COUNT], float(&Vy)[BOID_COUNT]) {
     // Seed the random number generator
     std::srand(static_cast<unsigned int>(std::time(0)));
 
-    for (int i = 0; i < size; ++i) {
+    for (int i = 0; i < BOID_COUNT; ++i) {
         // Assign random positions 
-        float randomX = static_cast<float>(std::rand() % width);
-        float randomY = static_cast<float>(std::rand() % height);
-        int id = i;
+        PosX[i] = static_cast<float>(std::rand() % WIDTH);
+        PosY[i] = static_cast<float>(std::rand() % HEIGHT);
 
-        boidArray[i] = Boid(id, { randomX, randomY });
+        Vx[i] = static_cast<float>(std::rand()) / RAND_MAX * (MAX_SPEED - MIN_SPEED) + MIN_SPEED;
+        Vy[i] = static_cast<float>(std::rand()) / RAND_MAX * (MAX_SPEED - MIN_SPEED) + MIN_SPEED;
     }
 }
 void initializeCells(int width, int height, Cell(&cellArray)[CELL_ARRAY_SIZE], int cellArraySize) {
