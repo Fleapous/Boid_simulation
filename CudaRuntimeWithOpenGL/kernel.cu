@@ -18,7 +18,7 @@
 #include <cmath>
 #include <iostream>
 
-#define BoidCount 12000
+#define BoidCount 10000
 #define CELL_ARRAY_SIZE 5625
 
 #define WIDTH 1500
@@ -42,7 +42,7 @@
 //Alignment & Cohesion
 #define VISIBLE_RANGE 35
 #define MATCHINGFACTOR 0.01
-#define CENTERINGFACTOR 0.04
+#define CENTERINGFACTOR 0.08
 
 uint2 gridList[BoidCount];
 
@@ -225,7 +225,7 @@ __device__ float2 calculateSeparation(int* localBoidIDs, int* neighboringBoidIds
 
     return make_float2(closeDx, closeDy);
 }
-__device__ float2 calculateAlignment(int* localBoidIDs, int* neighboringBoidIds, int boidIndex, Boid* boids, Boid currentBoid)
+__device__ float2 calculateAlignment(int* localBoidIDs, int* neighboringBoidIds, int boidIndex, Boid* boids, Boid currentBoid) // Look into range calculation!!!!!!!!!!!!!!
 {
     float xvelAvg = 0, yvelAvg = 0;
     int neighboring_boids = 0;
@@ -628,6 +628,7 @@ int main()
     cudaMalloc((void**)&d_cellArray, CELL_ARRAY_SIZE * sizeof(Cell));
 
     // Copy boidArray and cellArray to device memory
+    checkCudaError(cudaMalloc((void**)&d_lookUpTable, CELL_ARRAY_SIZE * 2 * sizeof(int)), "mallocFailed");
     cudaMemcpy(d_boidArray, boidArray, BoidCount * sizeof(Boid), cudaMemcpyHostToDevice);
     cudaMemcpy(d_cellArray, cellArray, CELL_ARRAY_SIZE * sizeof(Cell), cudaMemcpyHostToDevice);
 
@@ -659,8 +660,8 @@ int main()
 
         cudaDeviceSynchronize();
 
-        //init lookup table array
-        checkCudaError(cudaMalloc((void**)&d_lookUpTable, CELL_ARRAY_SIZE * 2 * sizeof(int)), "mallocFailed");
+        //init lookup table array PUt outside!!!!!!!!!!!!!!!
+
         cudaMemset(d_lookUpTable, -1, CELL_ARRAY_SIZE * 2 * sizeof(int));
 
         //create look up table
@@ -769,7 +770,7 @@ void CreateLookUpTable(uint2* d_gridList, Boid* d_boidArray, Cell* d_cellArray, 
     int numBlocks = (BoidCount * 9 + threadsPerBlock - 1) / threadsPerBlock;
 
     // Launch the kernel with the adjusted configuration
-    makeLookupTable << <numBlocks, threadsPerBlock >> > (d_gridList, d_boidArray, d_cellArray, d_lookUpTable);
+    makeLookupTable << <BoidCount, 9>> > (d_gridList, d_boidArray, d_cellArray, d_lookUpTable);
 }
 void SortGridList(uint2* d_gridList)
 {
